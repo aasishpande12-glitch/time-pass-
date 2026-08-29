@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Physics Platformer</title>
+<style>
+    html, body {
+        margin: 0;
+        padding: 0;
+        background: #222;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        font-family: Consolas, monospace;
+    }
+    canvas {
+        background: #87ceeb;
+        border: 3px solid #111;
+        display: block;
+    }
+    #hud {
+        position: absolute;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        color: #111;
+        font-size: 15px;
+        text-shadow: 0 0 2px #fff;
+        pointer-events: none;
+    }
+</style>
+</head>
+<body>
+
+<canvas id="game" width="900" height="600"></canvas>
+<div id="hud"></div>
+
+<script>
+// ---------------------------------------------------------
+// Setup
+// ---------------------------------------------------------
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const hud = document.getElementById("hud");
+const WIDTH = canvas.width;
+const HEIGHT = canvas.height;
+
+// ---------------------------------------------------------
+// Physics constants
+// ---------------------------------------------------------
+const GRAVITY = 0.8;
+const ACCELERATION = 0.6;
+const FRICTION = 0.12;
+const MAX_SPEED = 8;
+const JUMP_STRENGTH = -16;
+const TERMINAL_VELOCITY = 20;
+const COIN_SPIN_SPEED = 0.1;
+
+const COLORS = {
+    ground: "#503c28",
+    platform: "#64a05a",
+    player: "#e65050",
+    coin: "#ffd700",
+    coinEdge: "#966e00"
+};
+
+// ---------------------------------------------------------
+// Input handling
+// ---------------------------------------------------------
+const keys = {};
+window.addEventListener("keydown", (e) => {
+    keys[e.code] = true;
+    if (["Space", "ArrowUp", "KeyW"].includes(e.code)) {
+        player.jump();
+        e.preventDefault();
+    }
+    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space"].includes(e.code)) {
+        e.preventDefault();
+    }
+});
+window.addEventListener("keyup", (e) => {
+    keys[e.code] = false;
+});
+
+// ---------------------------------------------------------
+// Rect helper
+// ---------------------------------------------------------
+function rectsOverlap(a, b) {
+    return a.x < b.x + b.w &&
+           a.x + a.w > b.x &&
+           a.y < b.y + b.h &&
+           a.y + a.h > b.y;
+}
+
+// ---------------------------------------------------------
+// Platform class
+// ---------------------------------------------------------
+class Platform {
+    constructor(x, y, w, h, color = COLORS.platform) {
+        this.x = x; this.y = y; this.w = w; this.h = h;
+        this.color = color;
+    }
+    draw() {
+        ctx.fillStyle = this.color;
+        ctx.fillRect(this.x, this.y, this.w, this.h);
+        ctx.strokeStyle = "#000";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(this.x, this.y, this.w, this.h);
+    }
+}
+
+// ---------------------------------------------------------
+// Coin class (spinning collectible)
+// ---------------------------------------------------------
+class Coin {
+    constructor(x, y) {
+        this.x = x; this.y = y;
+        this.radius = 10;
+        this.angle = 0;
+        this.collected = false;
+    }
+    get rect() {
+        return { x: this.x - this.radius, y: this.y - this.radius,
+                 w: this.radius * 2, h: this.radius * 2 };
+    }
+    update() {
+        this.angle += COIN_SPIN_SPEED;
+    }
+    draw() {
+        if (this.collected) return;
+        const squash = Math.abs(Math.cos(this.angle));
+        const w = Math.max(2, this.radius * 2 * squash);
+        ctx.save();
+        ctx.beginPath();
+        ctx.ellipse(this.x, this.y, w / 2, this.radius, 0, 0, Math.PI * 2);
+        ctx.fillStyle = COLORS.coin;
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = COLORS.coinEdge;
+        ctx.stroke();
+        ctx.restore();
+    }
+}
+
+// ---------------------------------------------------------
+// Player class - movement, physics & collision
+// ---------------------------------------------------------
+class Player {
+    constructor(x, y) {
+        this.w = 36; this.h = 48;
+        this.x = x; this.y = y;
+        this.velX = 0; this.velY = 0;
+        this.onGround = false;
+        this.score = 0;
+        this.maxJumps = 2; // double jump
+        this.jumpsLeft = this.maxJumps;
+    }
+
+    get rect() {
+        return { x: this.x, y: this.y, w: this.w, h: this.h };
+    }
+
+    handleInput() {
+        let moving = false;
+        if (keys["ArrowLeft"] || keys["KeyA"]) {
+            this.velX -= ACCELERATION;
+            moving = true;
+        }
+        if (keys["ArrowRight"] || keys["KeyD"]) {
+            this.velX += ACCELERATION;
+            moving = true;
+        }
+
+        this.velX = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, this.velX));
+
+        if (!moving) {
+            if (this.velX > 0) this.velX = Math.max(0, this.velX - FRICTION);
+            else if (this.velX < 0) this.velX = Math.min(0, this.velX + FRICTION);
+        }
+    }
+
+    jump() {
+        if (this.jumpsLeft > 0) {
+            this.velY = JUMP_STRENGTH;
+            this.jumpsLeft -= 1;
+            this.onGround = false;
+        }
+    }
+
+    applyGravity() {
+        this.velY += GRAVITY;
+        this.velY = Math.min(this.velY, TERMINAL_VELOCITY);
+    }
+
+    moveAndCollide(platforms) {
+        // --- Horizontal ---
+        this.x += this.velX;
+        for (const plat of platforms) {
+            if (rectsOverlap(this.rect, plat)) {
+                if (this.velX > 0) this.x = plat.x - this.w;
+                else if (this.velX < 0) this.x = plat.x + plat.w;
+                this.velX = 0;
+            }
+        }
+
+        // --- Vertical ---
+        this.y += this.velY;
+        this.onGround = false;
+        for (const plat of platforms) {
+            if (rectsOverlap(this.rect, plat)) {
+                if (this.velY > 0) { // falling
+                    this.y = plat.y - this.h;
+                    this.velY = 0;
+                    this.onGround = true;
+                    this.jumpsLeft = this.maxJumps;
+                } else if (this.velY < 0) { // hit head
+                    this.y = plat.y + plat.h;
+                    this.velY = 0;
+                }
+            }
+        }
+
+        // --- Screen bounds ---
+        if (this.x < 0) { this.x = 0; this.velX = 0; }
+        if (this.x + this.w > WIDTH) { this.x = WIDTH - this.w; this.velX = 0; }
+        if (this.y > HEIGHT) this.respawn();
+    }
+
+    respawn() {
+        this.x = 60; this.y = HEIGHT - 150;
+        this.velX = 0; this.velY = 0;
+    }
+
+    collectCoins(coins) {
+        for (const coin of coins) {
+            if (!coin.collected && rectsOverlap(this.rect, coin.rect)) {
+                coin.collected = true;
+                this.score += 1;
+            }
+        }
+    }
+
+    update(platforms, coins) {
+        this.handleInput();
+        this.applyGravity();
+        this.moveAndCollide(platforms);
+        this.collectCoins(coins);
+    }
+
+    draw() {
+        ctx.fillStyle = COLORS.player;
+        roundRect(this.x, this.y, this.w, this.h, 6, true, true);
+    }
+}
+
+function roundRect(x, y, w, h, r, fill, stroke) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+    if (fill) ctx.fill();
+    if (stroke) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#000";
+        ctx.stroke();
+    }
+}
+
+// ---------------------------------------------------------
+// Level setup
+// ---------------------------------------------------------
+function buildLevel() {
+    const platforms = [
+        new Platform(0, HEIGHT - 40, WIDTH, 40, COLORS.ground),
+        new Platform(150, 460, 150, 20),
+        new Platform(380, 380, 150, 20),
+        new Platform(600, 300, 150, 20),
+        new Platform(200, 220, 120, 20),
+        new Platform(500, 160, 120, 20),
+    ];
+    const coins = [
+        new Coin(200, 430), new Coin(430, 350), new Coin(650, 270),
+        new Coin(250, 190), new Coin(540, 130),
+    ];
+    return { platforms, coins };
+}
+
+const { platforms, coins } = buildLevel();
+const player = new Player(60, HEIGHT - 150);
+
+// ---------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------
+function loop() {
+    player.update(platforms, coins);
+    coins.forEach(c => c.update());
+
+    // --- Draw ---
+    ctx.clearRect(0, 0, WIDTH, HEIGHT);
+    ctx.fillStyle = "#87ceeb";
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+    platforms.forEach(p => p.draw());
+    coins.forEach(c => c.draw());
+    player.draw();
+
+    hud.textContent =
+        `Score: ${player.score}   Jumps left: ${player.jumpsLeft}   ` +
+        `Move: A/D or Arrows   Jump: Space/W/Up`;
+
+    requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
